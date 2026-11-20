@@ -1,7 +1,20 @@
-/* OPPO Find X9 Pro (PLG110) — Dimensity 9400 (MT6991), kernel 6.12
- * Rust ashmem, PSELECT_SHIFT=0
- * D9400 uses phys_offset=0x80000000 (same as Qualcomm default).
- * kernel_phys_load=0x80000000 confirmed via ghostlock-app (#45). */
+/* OPPO Find X9 Pro (PLG110) — MediaTek Dimensity 9400 (MT6993), kernel 6.12
+ * Rust ashmem, PSELECT_SHIFT=0, Path B only (off_ashmem_misc_fops unavailable).
+ *
+ * Verified on hardware: uname -r 6.12.23-android16-5-g82efd98459a2-ab14457512-4k,
+ * ro.soc.model MT6993, ro.board.platform mt6993, ro.product.device OP5E11L1,
+ * Android 16, security patch 2026-08-01.
+ *
+ * kernel_phys_load=0x80000000: /proc/iomem reports "Kernel code" at 0x80010000,
+ * which is _stext, with _text 0x10000 lower. The .phys_offset field is left 0,
+ * which select_offsets() reads as "keep target.h's P0_PHYS_OFFSET" — the same
+ * 0x80000000 — so p0_data_alias() computes a zero delta, the form the image's
+ * text_offset=0 supports. The two values only ever appear as a difference.
+ *
+ * off_security_hook_heads=0 and off_ashmem_misc_fops=0 are deliberate: this
+ * kernel uses LSM static calls (no security_hook_heads list) and the Rust
+ * ashmem driver has no static miscdevice fops table in BSS. Callers must test
+ * them for zero before use — see runtime_struct_offsets.h _RSO_RAW. */
 
 OFFSETS_ENTRY("6.12.23-android16-5-g82efd98459a2-ab14457512-4k",
   .kernel_phys_load=0x80000000, STRUCT_OFFSETS_6_12,

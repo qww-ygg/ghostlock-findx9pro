@@ -93,19 +93,16 @@ struct kernel_offsets {
   .fops_open=0x68, .fops_release=0x78, .fops_splice_read=0xB8, .fops_show_fdinfo=0xD8
 
 static const struct kernel_offsets known_offsets[] = {
-  /* Add new devices by creating src/devices/<name>/offsets.h */
-#include "ace6t/offsets.h"
-#include "op13/offsets.h"
-#include "op15/offsets.h"
-#include "findx9ultra/offsets.h"
-#include "pudding/offsets.h"
-#include "pad4pro/offsets.h"
-#include "cph2521/offsets.h"
-#include "vivot4/offsets.h"
-#include "vivoxfold3pro/offsets.h"
-#include "xperia1iv/offsets.h"
-#include "findx9pro/offsets.h"
-#include "vivox200ultra/offsets.h"
+  /* This fork ships a single entry. The struct and the STRUCT_OFFSETS_*
+   * macros are unchanged from upstream, so another device only needs a new
+   * src/devices/<name>/offsets.h plus an include here.
+   *
+   * Upstream listed 15 entries but only the fallback device in target.h
+   * actually worked: main.c rebound X_OFF to active_offsets->*, while every
+   * other translation unit kept target.h's compile-time constants. That is
+   * fixed in runtime_struct_offsets.h (included at the end of common.h), but
+   * the other tables have not been re-verified against hardware here. */
+  #include "findx9pro/offsets.h"
   { .uname_r = NULL }
 };
 

