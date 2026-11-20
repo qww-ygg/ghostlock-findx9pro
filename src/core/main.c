@@ -216,44 +216,94 @@ static int check_selinux_off(void) {
 }
 
 static int write_selinux_policy_fix_script(void) {
+  /* Repairs what W1 damages in struct selinux_state, following the documented
+   * flow: patch the policy image's config word with
+   *   |= 0xC0000000  (ANDROID_NETLINK_ROUTE | ANDROID_NETLINK_GETNEIGH)
+   * then reload it through /sys/fs/selinux/load so the kernel re-derives the
+   * policy capabilities from the (now correct) image.
+   *
+   * Why the reload is needed at all: W1 is an 8-byte zero write at
+   * data_addr(SELINUX_ENFORCING), and struct selinux_state begins with
+   *   +0x00 bool enforcing
+   *   +0x01 bool initialized
+   *   +0x02 bool policycap[9]      (0x02..0x0a)
+   * so the write clears enforcing, initialized and policycap[0..5]:
+   * netpeer_controls, open_perms, extended_socket_class, always_check_network,
+   * cgroup_seclabel, nnp_nosuid_transition. The device then loses network
+   * access with tclass=netif denials from netd.
+   *
+   * THE BUG THIS REPLACES, and the only thing that was actually wrong:
+   * the patch step wrote its four bytes with
+   *     printf '\x%02x\x%02x\x%02x\x%02x' ...
+   * toybox rejects \x in a format string — `printf '\x%02x' 1 1` prints
+   * "printf: bad \x" and emits the literal bytes 5c 78 — so the policy header
+   * was corrupted and security_load_policy() returned EINVAL on every run
+   * (observed 8/8 failures in .ghostlock_policy.log). printf() only expands
+   * escapes in the FORMAT string, never in %s arguments, so the working form
+   * builds the escape text with %03o first and then feeds it to printf:
+   *     ESC=$(printf '\\%03o\\%03o\\%03o\\%03o' <b0> <b1> <b2> <b3>)
+   *     printf "$ESC" | dd of=$T bs=1 seek=$CO conv=notrunc
+   * Verified on the device: readback 0xC0000001, load_policy rc=0, network
+   * restored under enforce=1.
+   *
+   * Also note toybox arithmetic is signed 32-bit, so `$((1 | 0xC0000000))`
+   * prints -1073741823 and cannot be compared or shifted safely. The script
+   * therefore works on the four config bytes directly: `|= 0xC0000000` only
+   * touches the top byte (0xC0 == bits 30 and 31), so that byte is OR-ed while
+   * the other three are carried over untouched. Every comparison is a byte
+   * string from `od -t x1`, which sidesteps signedness and endianness alike.
+   *
+   * If the patched load fails anyway, the script retries with the unmodified
+   * policy before giving up: a load of the running policy alone is enough to
+   * restore the caps, so the patch failing must not lose the repair.
+   */
   static const char fix_script[] =
     "#!/system/bin/sh\n"
     "P=/sys/fs/selinux/policy\n"
-    "L=/sys/fs/selinux/load\n"
     "T=/data/local/tmp/.ghostlock_policy.bin\n"
     "LOG=/data/local/tmp/.ghostlock_policy.log\n"
     "exec >>$LOG 2>&1\n"
     "echo \"[*] policy fix: uid=$(id -u) enforce=$(cat /sys/fs/selinux/enforce 2>/dev/null)\"\n"
-    "cp $P $T || { echo '[!] policy fix: policy copy failed'; exit 1; }\n"
+    "cp $P $T || { echo '[!] policy fix: copy failed (not root?)'; exit 1; }\n"
     "SZ=$(wc -c < $T)\n"
-    "[ \"$SZ\" -gt 20 ] || { echo \"[!] policy fix: policy too short ($SZ bytes)\"; exit 1; }\n"
+    "[ \"$SZ\" -gt 20 ] || { echo \"[!] policy fix: policy too short ($SZ bytes)\"; rm -f $T; exit 1; }\n"
     "ID_LEN=$(dd if=$T bs=1 skip=4 count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')\n"
     "CO=$((4 + 4 + ID_LEN + 4))\n"
-    "CFG=$(dd if=$T bs=1 skip=$CO count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')\n"
-    "NEW=$(( CFG | 0xC0000000 ))\n"
-    "if [ \"$NEW\" != \"$CFG\" ]; then\n"
-    "  printf '\\\\x%02x\\\\x%02x\\\\x%02x\\\\x%02x' "
-      "$((NEW & 0xFF)) $(((NEW>>8) & 0xFF)) $(((NEW>>16) & 0xFF)) $(((NEW>>24) & 0xFF))"
-      " | dd of=$T bs=1 seek=$CO conv=notrunc 2>/dev/null\n"
-    "  echo \"[*] policy fix: config=$CFG -> $NEW at offset=$CO (netlink flags restored)\"\n"
+    "set -- $(dd if=$T bs=1 skip=$CO count=4 2>/dev/null | od -A n -t u1)\n"
+    "B0=$1; B1=$2; B2=$3; B3=$4\n"
+    "echo \"[*] policy fix: size=$SZ id_len=$ID_LEN config_off=$CO bytes=$B0 $B1 $B2 $B3\"\n"
+    "H3=$(( B3 | 0xC0 ))\n"
+    "ESC=$(printf '\\\\%03o\\\\%03o\\\\%03o\\\\%03o' $B0 $B1 $B2 $H3)\n"
+    "NEW=$(printf \"$ESC\" | od -A n -t x1 | tr -d ' \\n')\n"
+    "echo \"[*] policy fix: want config bytes=$NEW\"\n"
+    "if [ \"$B3\" -ne \"$H3\" ]; then\n"
+    "  printf \"$ESC\" | dd of=$T bs=1 seek=$CO conv=notrunc 2>/dev/null\n"
+    "  GOT=$(dd if=$T bs=1 skip=$CO count=4 2>/dev/null | od -A n -t x1 | tr -d ' \\n')\n"
+    "  echo \"[*] policy fix: patched config readback=$GOT\"\n"
+    "  if [ \"$GOT\" != \"$NEW\" ]; then\n"
+    "    echo '[!] policy fix: readback mismatch; using the pristine copy'\n"
+    "    cp $P $T\n"
+    "  fi\n"
     "else\n"
-    "  echo \"[*] policy fix: config=$CFG at offset=$CO (already has netlink flags)\"\n"
+    "  echo '[*] policy fix: config already carries the netlink bits'\n"
     "fi\n"
-    "# /sys/fs/selinux/load requires the entire policy in a single write().\n"
-    "# load_policy uses mmap+write and is reliable; dd may split large writes.\n"
-    "if load_policy $T 2>/dev/null; then\n"
-    "  echo '[+] policy fix: policy loaded via load_policy'\n"
-    "  rm -f $T\n"
-    "  exit 0\n"
+    "# /sys/fs/selinux/load takes the whole policy in one write(); load_policy\n"
+    "# maps it and does that correctly, unlike a shell `cat`.\n"
+    "load_policy $T\n"
+    "RC=$?\n"
+    "echo \"[*] policy fix: load_policy rc=$RC\"\n"
+    "if [ \"$RC\" -ne 0 ]; then\n"
+    "  echo '[*] policy fix: retrying with the unmodified policy'\n"
+    "  cp $P $T\n"
+    "  load_policy $T\n"
+    "  RC=$?\n"
+    "  echo \"[*] policy fix: unpatched load_policy rc=$RC\"\n"
     "fi\n"
-    "if cat $T > $L 2>/dev/null; then\n"
-    "  echo '[+] policy fix: policy loaded via cat'\n"
-    "  rm -f $T\n"
-    "  exit 0\n"
-    "fi\n"
-    "echo '[!] policy fix: policy load failed'\n"
     "rm -f $T\n"
-    "exit 1\n";
+    "[ \"$RC\" -eq 0 ] || { echo '[!] policy fix: policy load failed'; exit 1; }\n"
+    "echo '[+] policy fix: policycaps re-derived from the policy image'\n"
+    "dmesg | grep -i 'policy capability' | tail -9\n"
+    "exit 0\n";
   int sfd = open("/data/local/tmp/.ghostlock_fixpol.sh", O_WRONLY | O_CREAT | O_TRUNC, 0755);
   if (sfd < 0) {
     pr_info("fix_policy: write script failed errno=%d\n", errno);

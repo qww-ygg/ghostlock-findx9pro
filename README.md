@@ -163,7 +163,60 @@ Write 2 (mode=2)  →  task->cred = init_cred (uid=0, all capabilities)
 Root shell        →  ksud insmod → KSU → SELinux policy fix
 ```
 
-After W1+W2, the exploit patches the SELinux policy binary's config field (`|= 0xC0000000` for `ANDROID_NETLINK_ROUTE` + `GETNEIGH`) and reloads via `/sys/fs/selinux/load` to restore network connectivity. On this device that repair failed (`policy load failed`) and network access had to be restored by rebooting; the KSU module itself survives only until reboot.
+After W1+W2 the exploit patches the SELinux policy binary's config field with
+`|= 0xC0000000` (`ANDROID_NETLINK_ROUTE | ANDROID_NETLINK_GETNEIGH`) and reloads
+it through `/sys/fs/selinux/load`.
+
+Why both steps exist. W1 is an 8-byte zero write at `data_addr(SELINUX_ENFORCING)`,
+and `struct selinux_state` starts with `bool enforcing` (+0x00), `bool initialized`
+(+0x01) and `bool policycap[9]` (+0x02). The write therefore clears
+`policycap[0..5]` — `netpeer_controls`, `open_perms`, `extended_socket_class`,
+`always_check_network`, `cgroup_seclabel`, `nnp_nosuid_transition`. With
+`always_check_network` cleared the kernel starts enforcing netif egress/ingress,
+`netd` gets `tclass=netif` denials, and the device has no network. Reloading the
+policy image makes the kernel re-derive those capabilities.
+
+Measured on PLG110 after the repair, with `enforce=1`:
+
+```
+[*] policy fix: size=2506021 id_len=8 config_off=20 bytes=1 0 0 0
+[*] policy fix: want config bytes=010000c0
+[*] policy fix: patched config readback=010000c0
+[*] policy fix: load_policy rc=0
+[+] policy fix: policycaps re-derived from the policy image
+```
+
+`ping 192.168.3.1`, `ping 223.5.5.5` and DNS resolution all succeed, and
+`tclass=netif` denials stop growing (11 before, 11 after fifteen seconds of
+traffic).
+
+### The bug that made this repair fail
+
+The upstream script wrote its four bytes with
+`printf '\x%02x\x%02x\x%02x\x%02x'`. toybox rejects `\x` in a format string:
+
+```
+$ printf '\x%02x\x%02x\n' 1 1 | od -A n -t x1
+ 70 72 69 6e 74 66 3a 20 62 61 64 20 5c 78 0a     # "printf: bad \x"
+```
+
+It emits the literal bytes `5c 78`, corrupting the policy header, so
+`security_load_policy()` returned EINVAL on every attempt — eight out of eight in
+`.ghostlock_policy.log`. `printf` only expands escapes in the **format** string,
+never in `%s` arguments, so the working form builds the escape text with `%03o`
+and then feeds it to `printf`:
+
+```sh
+ESC=$(printf '\\%03o\\%03o\\%03o\\%03o' $B0 $B1 $B2 $H3)
+printf "$ESC" | dd of=$T bs=1 seek=$CO conv=notrunc
+```
+
+`|= 0xC0000000` only sets bits 30 and 31, i.e. the top byte, so the script ORs
+just that byte (`B3 | 0xC0`) and carries the other three through untouched. Every
+comparison is a byte string from `od -t x1` — toybox arithmetic is signed 32-bit
+and prints `$((1 | 0xC0000000))` as `-1073741823`, so numeric comparison and
+shifting are avoided entirely. If the patched load still fails, the script retries
+with the pristine policy: reloading the running policy alone restores the caps.
 
 ### Bootstrap Mode (phone standalone)
 
